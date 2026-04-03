@@ -55,7 +55,7 @@ def download_single_image(idx, url):
             response = requests.get(url, timeout=10)
             response.raise_for_status()
             data = response.content
-            ext = utils.get_image_type(data)   # передаём байты картинки
+            ext = utils.get_image_type(data)
             filename = f"{idx}.{ext}"
             time.sleep(config.DELAY)
             return filename, data
