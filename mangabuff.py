@@ -11,6 +11,7 @@ import config
 import utils
 
 
+
 def get_soup(url:str) -> BeautifulSoup:
     response = requests.get(url)
     response.raise_for_status()
@@ -132,7 +133,6 @@ def init(slugs):
 slugs = [
     "https://mangabuff.ru/manga/vyzhit-v-seme-iskusnyh-otravitelei",
     "https://mangabuff.ru/manga/skazanie-hengdan"
-         
-         ]
+    ]
 
 init(slugs)

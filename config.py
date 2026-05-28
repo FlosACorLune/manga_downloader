@@ -1,6 +1,6 @@
 import os
 
-DESKTOP_PATH = r"D:\Manga"
+DESKTOP_PATH = r"D:\TESTMANGA"
 #DESKTOP_PATH = r"E:\Manga"
 MOBILE_PATH = r"/storage/emulated/0/Amain/Manga"
 PATH = DESKTOP_PATH if os.name == 'nt' else MOBILE_PATH

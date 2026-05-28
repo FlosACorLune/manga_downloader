@@ -175,18 +175,8 @@ slugs = [
     "99509--wo-de-jia-nuyou-zheng-quanli-fangyu-tamen-de-jingong",
     "153568--tensai-majo-no-maryoku-kare",
     "105728--hwansang-yeonga",
-    #"1279--nano",#finished
-    #"1773--wind-breaker" #finished
-    #"6435--kaguya-sama-wa-kokurasetai-tensai-tachi-no-renai-zunousen"
     "101912--ill-never-send-a-selfie-again",
     "11185--hua-yu-yinni-zhi-wu-kua"
     ]
-
-slugs = [
-    #"7820--suddenly-became-a-princess-one-day-", #finished
-    #"36842--agnyeoneun-malioneteu",#finished
-    #"32693--how-to-fight", #finished
-    #"56210--auto-mode-expired-in-the-6th-round-of-the-otome-game", #finished
-]
 
 asyncio.run(init(slugs))
