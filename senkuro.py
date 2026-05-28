@@ -1,13 +1,13 @@
 import asyncio
 import os
-import aiohttp
+import httpx
 import zipfile
 import re
 from dotenv import load_dotenv
 import config
 import utils
 
-
+# Загрузка конфигурации
 PATH = config.PATH
 max_concurrent = config.WORKER
 max_retries = config.ATTEMP
@@ -16,19 +16,15 @@ load_dotenv()
 SENKURO_TOKEN = os.getenv("SENKURO_TOKEN")
 
 api_url = 'https://api.senkuro.me/graphql'
-#api_url = 'https://api.senkognito.com/graphql'
 HEADERS = {
     "Content-Type": "application/json",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0",
-    "authorization": SENKURO_TOKEN
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
 }
 
-async def fetchManga(session, slug):
-    PAYLOAD_MANGA = {
+async def fetchManga(client: httpx.AsyncClient, slug: str):
+    payload = {
         "operationName": "fetchManga",
-        "variables": {
-            "slug": slug
-        },
+        "variables": {"slug": slug},
         "extensions": {
             "persistedQuery": {
                 "version": 1,
@@ -36,36 +32,37 @@ async def fetchManga(session, slug):
             }
         }
     }
-    async with session.post(api_url, json=PAYLOAD_MANGA,headers=HEADERS) as response:
-        return await response.json()
+    response = await client.post(api_url, json=payload)
+    response.raise_for_status()
+    return response.json()
 
 def extract_info_fetchManga(data):
     manga = data['data']['manga']
-    branch = data['data']['manga']['branches'][0]
-
+    # Берем первую доступную ветку (branch)
+    branch = manga['branches'][0]
+    
+    # Ищем русское название, если нет — берем первое доступное
+    title_name = next((item["content"] for item in manga['titles'] if item["lang"] == "RU"), manga['titles'][0]['content'])
+    
     return {
         "slug": manga['slug'],
-        "title_name": next(item["content"] for item in manga['titles'] if item["lang"] == "RU"),
+        "title_name": title_name,
         "chapter_count": branch['chapters'],
         "branch_id": branch['id']
     }
 
-
-async def fetchMangaChapter(session, branch_id: str):
+async def fetchMangaChapter(client: httpx.AsyncClient, branch_id: str):
     after = None
     all_chapters = []
 
     while True:
-        PAYLOAD_CHAPTER = {
+        payload = {
             "operationName": "fetchMangaChapters",
             "variables": {
                 "after": after,
                 "branchId": branch_id,
                 "number": None,
-                "orderBy": {
-                    "direction": "ASC",
-                    "field": "NUMBER"
-                }
+                "orderBy": {"direction": "ASC", "field": "NUMBER"}
             },
             "extensions": {
                 "persistedQuery": {
@@ -75,48 +72,35 @@ async def fetchMangaChapter(session, branch_id: str):
             }
         }
 
-        async with session.post(api_url, json=PAYLOAD_CHAPTER, headers=HEADERS) as response:
-            data = await response.json()
+        response = await client.post(api_url, json=payload)
+        response.raise_for_status()
+        data = response.json()
 
-            chapters = data['data']['mangaChapters']['edges']
-            all_chapters.extend(chapters)
+        chapters = data['data']['mangaChapters']['edges']
+        all_chapters.extend(chapters)
 
-            page_info = data['data']['mangaChapters']['pageInfo']
-            if page_info['hasNextPage']:
-                after = page_info['endCursor']
-            else:
-                break
+        page_info = data['data']['mangaChapters']['pageInfo']
+        if page_info['hasNextPage']:
+            after = page_info['endCursor']
+        else:
+            break
 
-    return {
-        "data": {
-            "mangaChapters": {
-                "edges": all_chapters
-            }
-        }
-    }
+    return {"data": {"mangaChapters": {"edges": all_chapters}}}
 
 def extract_info_fetchMangaChapter(data) -> list:
-    result = []
-    edges = data['data']['mangaChapters']['edges']
+    return [
+        {
+            'slug': edge['node']['slug'],
+            'number': edge['node']['number'],
+            'volume': edge['node']['volume']
+        }
+        for edge in data['data']['mangaChapters']['edges']
+    ]
 
-    for edge in edges:
-        node = edge['node']
-        result.append({
-            'slug': node['slug'],
-            'number': node['number'],
-            'volume': node['volume']
-        })
-    
-    return result
-
-
-async def fetchMangaChapterImage(session, slug):
-    PAYLOAD_IMAGE = {
+async def fetchMangaChapterImage(client: httpx.AsyncClient, slug: str):
+    payload = {
         "operationName": "fetchMangaChapter",
-        "variables": {
-            "cdnQuality": "auto",
-            "slug": slug
-        },
+        "variables": {"cdnQuality": "auto", "slug": slug},
         "extensions": {
             "persistedQuery": {
                 "version": 1,
@@ -124,54 +108,41 @@ async def fetchMangaChapterImage(session, slug):
             }
         }
     }   
-    async with session.post(api_url, json=PAYLOAD_IMAGE, headers=HEADERS) as response:
-            return await response.json()
+    response = await client.post(api_url, json=payload)
+    response.raise_for_status()
+    return response.json()
 
 def extract_info_fetchMangaChapterImageOriginal(data):
     pages = data['data']['mangaChapter']['pages']
-    list = []
-    for page in pages:
-        list.append(page['image']['original']['url'])
-    return list
+    return [page['image']['original']['url'] for page in pages]
 
-
-#общ функция
 def downloaded_chapter(title_name: str, download_dir: str) -> int:
-    folder = os.path.join(download_dir, title_name)
+    safe_title = re.sub(r'[\\/*?:"<>|]', "", title_name).strip().rstrip('.')
+    folder = os.path.join(download_dir, safe_title)
     if not os.path.isdir(folder):
         return 0
+    return sum(1 for f in os.listdir(folder) if f.endswith(".zip") and f.startswith("volume_"))
 
-    # Считаем только ZIP файлы с главами
-    return sum(
-        1 for file in os.listdir(folder)
-        if file.endswith(".zip") and file.startswith("volume_")
-    )
-
-
-async def download_chapter_images(image_urls, session, max_concurrent=max_concurrent, max_retries=max_retries):
+async def download_chapter_images(image_urls, client: httpx.AsyncClient, max_concurrent=max_concurrent):
     semaphore = asyncio.Semaphore(max_concurrent)
 
     async def fetch_image(url, idx):
         for attempt in range(1, max_retries + 1):
             try:
                 async with semaphore:
-                    async with session.get(url) as resp:
-                        if resp.status == 200:
-                            data = await resp.read()
-                            ext = utils.get_image_type(data)
-                            filename = f"{idx}.{ext}"       
-                                                 
-                            await asyncio.sleep(config.DELAY)
-                            
-                            return filename, data
-                        else:
-                            print(f"⚠️ Попытка {attempt}: не удалось скачать {url} (status {resp.status})")
+                    response = await client.get(url, timeout=latency)
+                    if response.status_code == 200:
+                        content = response.content
+                        ext = utils.get_image_type(content)
+                        filename = f"{idx}.{ext}"
+                        await asyncio.sleep(config.DELAY)
+                        return filename, content
+                    else:
+                        print(f"⚠️ Попытка {attempt}: Ошибка {response.status_code} для {url}")
             except Exception as e:
-                print(f"❌ Попытка {attempt}: ошибка при скачивании {url}: {e}")
-
+                print(f"❌ Попытка {attempt}: Ошибка при скачивании {url}: {e}")
 
             if attempt < max_retries:
-                print(f"🔁 Повторная попытка через {latency} секунд...")
                 await asyncio.sleep(latency)
 
         print(f"❌ Провалено после {max_retries} попыток: {url}")
@@ -179,14 +150,12 @@ async def download_chapter_images(image_urls, session, max_concurrent=max_concur
 
     tasks = [fetch_image(url, idx) for idx, url in enumerate(image_urls, 1)]
     results = await asyncio.gather(*tasks)
-
-    return {
-        filename: data for result in results if result
-        for filename, data in [result]
-    }
-
+    return {res[0]: res[1] for res in results if res}
 
 async def save_images_as_zip(images: dict, title_name: str, volume: int, chapter: int):
+    if not images:
+        return
+
     safe_title = re.sub(r'[\\/*?:"<>|]', "", title_name).strip().rstrip('.')
     save_dir = os.path.join(PATH, safe_title)
     os.makedirs(save_dir, exist_ok=True)
@@ -202,117 +171,59 @@ async def save_images_as_zip(images: dict, title_name: str, volume: int, chapter
         for filename, data in images.items():
             zipf.writestr(filename, data)
 
-
     print(f"✅ Глава сохранена: {archive_path}")
-
-
 
 def chapter_exists(title_name: str, volume: int, chapter: int) -> bool:
     safe_title = re.sub(r'[\\/*?:"<>|]', "", title_name).strip().rstrip('.')
-    save_dir = os.path.join(PATH, safe_title)
     archive_name = f"volume_{volume}__chapter_{chapter}.zip"
-    archive_path = os.path.join(save_dir, archive_name)
-    return os.path.exists(archive_path)
+    return os.path.exists(os.path.join(PATH, safe_title, archive_name))
 
-
-async def download_all_chapters(chapter_list, session, title_name, max_concurrent=5):
+async def download_all_chapters(chapter_list, client, title_name):
     for ch in chapter_list:
-        volume = ch["volume"]
-        number = ch["number"]
-        chapter_slug = ch["slug"]
+        volume, number, slug = ch["volume"], ch["number"], ch["slug"]
 
-        # Проверяем, есть ли глава локально
         if chapter_exists(title_name, volume, number):
-            print(f"⏭️ Пропущено: volume {volume} chapter {number} уже скачана.")
+            print(f"⏭️ Пропущено: Том {volume} Глава {number}")
             continue
 
-        # Получаем image_urls
-        image_data = await fetchMangaChapterImage(session, chapter_slug)
-        image_urls = extract_info_fetchMangaChapterImageOriginal(image_data)
-
-        # Скачиваем изображения этой главы
-        images = await download_chapter_images(image_urls, session, max_concurrent)
-
-        # Сохраняем главу отдельно
-        await save_images_as_zip(images, title_name, volume, number)
-
+        try:
+            image_data = await fetchMangaChapterImage(client, slug)
+            image_urls = extract_info_fetchMangaChapterImageOriginal(image_data)
+            images = await download_chapter_images(image_urls, client)
+            await save_images_as_zip(images, title_name, volume, number)
+        except Exception as e:
+            print(f"💥 Ошибка в главе {number}: {e}")
 
 async def main(slugs):
-    for slug in slugs:
-        async with aiohttp.ClientSession() as session:
-            fetchManga_data = await fetchManga(session, slug)
-            fetchManga_ = extract_info_fetchManga(fetchManga_data)
+    # Используем один клиент для всех запросов (рекомендуется httpx)
+    async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True) as client:
+        for slug in slugs:
+            try:
+                manga_raw = await fetchManga(client, slug)
+                manga_info = extract_info_fetchManga(manga_raw)
+                
+                title_name = manga_info['title_name']
+                print(f"📖 Обработка: {title_name}")
 
-            branch_id = fetchManga_['branch_id']
-            title_name = fetchManga_['title_name']
+                chapters_raw = await fetchMangaChapter(client, manga_info['branch_id'])
+                chapter_list = extract_info_fetchMangaChapter(chapters_raw)
 
-            # Список глав с сервера
-            fetchMangaChapter_data = await fetchMangaChapter(session, branch_id)
-            chapter_list = extract_info_fetchMangaChapter(fetchMangaChapter_data)
+                server_count = len(chapter_list)
+                local_count = downloaded_chapter(title_name, PATH)
 
-            server_count = len(chapter_list)
-            local_count = downloaded_chapter(title_name, PATH)
+                print(f"📊 Сервер: {server_count}, Локально: {local_count}")
 
-            print(f"📊 На сервере {server_count} глав, локально {local_count}")
+                await download_all_chapters(chapter_list, client, title_name)
 
-            # Скачиваем только недостающие
-            await download_all_chapters(chapter_list, session, title_name)
+                final_count = downloaded_chapter(title_name, PATH)
+                if final_count == server_count:
+                    print(f"✅ Успешно скачано: {title_name} ({final_count}/{server_count})")
+                else:
+                    print(f"⚠️ Завершено с пропусками: {final_count}/{server_count}")
 
-            # Проверка после скачивания
-            final_count = downloaded_chapter(title_name, PATH)
-            if final_count == server_count:
-                print(f"✅ Все {final_count}/{server_count} глав скачаны: {title_name}")
-            else:
-                print(f"⚠️ Недостающие главы остались: {final_count}/{server_count} скачано")
+            except Exception as e:
+                print(f"🛑 Критическая ошибка при обработке {slug}: {e}")
 
-
-
-
-slugs = [
-    "today-is-a-woman-day",
-    #"akuyaku-reijou-to-kichiku-kishi",
-    #"reverend-insanity-2025",
-    #"eiketsu-no-do-m-juuzoku-keiken-chiito-tte-ari",
-    #"akuyaku-reijou-slow-life-wo-enjoy-shitai-yatto-konyaku-haki-sareta-noni-dai-2-ouji-ga-meccha-stalker-shitekurun-desu-kedo",
-    "wo-de-shifu-mei-dao-daxian-cai-tupo",
-    "my-bias-gets-on-the-last-train",
-    "star-fostered-swordmaster",
-    "segye-choegoui-enjinieo",
-    "i-will-die-soon", #завершен
-    "the-girl-downstairs",
-    "legend-of-the-holy-sword",
-    "emperor-hunt",
-    "she-s-hopeless",
-    "couple-breaker",
-    "escort-warrior", #завершен
-    "agdang-i-sal-aganeun-beob",
-    "musamanlihaeng",
-    "delusion", #завершен
-    "gijamae",
-    "black-innocence-diary", #завершен
-    "the-war-of-corpses",
-    "everyone-loves-her",
-    "unemployed-gye-baek-soon",
-    "the-road-of-karma", #завершен
-    "the-marshal-king",
-    "ghostblade",
-    "peulreieo",
-    "deo-bogseo", #завершен
-    "yeobchongsonyeon", #завершен
-    "seuwiteu-hom", #завершен
-    "hulejasig", #завершен
-    "cheonchijeonneung", #finished
-    "my-office-noona-s-stories", 
-    "ssaumdokak", #finished
-    "the-knight-king-who-returned-with-a-god",
-    "the-old-prisoner-lives-in-solitude",
-    "the-returned-c-rank-tank-won-t-die",
-    "fated-to-be-loved-by-villains"
-]
-
-slugs = [
-    "full-metal-panic-comic-mission"
-]
-
-
-asyncio.run(main(slugs))
+if __name__ == "__main__":
+    slugs = ["kono-gomi-wo-nanto-yobu"]
+    asyncio.run(main(slugs))

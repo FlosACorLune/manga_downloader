@@ -1,36 +1,28 @@
-import concurrent.futures
+import asyncio
 import os
 import re
-import time
-import zipfile
-
-import requests
+import httpx
 from bs4 import BeautifulSoup
 
 import config
 import utils
 
+semaphore = asyncio.Semaphore(config.WORKER)
 
-
-def get_soup(url:str) -> BeautifulSoup:
-    response = requests.get(url)
+async def get_soup(client: httpx.AsyncClient, url: str) -> BeautifulSoup:
+    response = await client.get(url)
     response.raise_for_status()
     return BeautifulSoup(response.text, "html.parser")
 
 
-def save_images_as_zip(images: dict, output_path: str):
-    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_STORED) as z:
-        for name, data in sorted(images.items()):
-            z.writestr(name, data)
-    print("✔ ZIP:", output_path)
-
-
-def title_name(soup):
+def title_name(soup: BeautifulSoup) -> str:
     t = soup.find("h1", class_="manga__name")
+    if not t:
+        return "Unknown_Manga"
     return re.sub(r"[\\/:*.?\"<>|]", "", t.get_text(strip=True))
 
 
-def extract_vol_ch(soup):
+def extract_vol_ch(soup: BeautifulSoup) -> list:
     out = []
     for t in soup.find_all("a", class_="chapters__item"):
         v = t.find("div", class_="chapters__volume")
@@ -44,95 +36,102 @@ def extract_vol_ch(soup):
     return out
 
 
-def extract_image_links(soup):
-    box = soup.find("div", class_="reader__pages")
-    imgs = box.find_all("img") if box is not None else []
-    return [i.get("src") or i.get("data-src") for i in imgs]
-
-
-def download_single_image(idx, url):
-    for _ in range(config.ATTEMP):
-        try:
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.content
-            ext = utils.get_image_type(data)
-            filename = f"{idx}.{ext}"
-            time.sleep(config.DELAY)
-            return filename, data
-        except requests.exceptions.RequestException as e:
-            print(f"Ошибка скачивания ({url}): {e}")
-            time.sleep(3)
-
-    print("⚠ Не скачано:", url)
-    return None, None
-
-
-
-def download_images_to_memory(links):
-    imgs = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=config.WORKER) as ex:
-        futures = [
-            ex.submit(download_single_image, i, u) for i, u in enumerate(links, 1)
-        ]
-        for f in concurrent.futures.as_completed(futures):
+async def download_single_image(client: httpx.AsyncClient, idx: int, url: str):
+    async with semaphore:
+        for attempt in range(1, config.ATTEMP + 1):
             try:
-                name, data = f.result()
-            except Exception as e:
-                print("Task failed",e)
-                continue
-            if name and data:
-                imgs[name] = data
+                response = await client.get(url, timeout=20)
+                response.raise_for_status()
+                
+                data = response.content
+                ext = utils.get_image_type(data)
+                filename = f"{idx}.{ext}"
+                
+                if config.DELAY > 0:
+                    await asyncio.sleep(config.DELAY)
+                return filename, data
+                
+            except httpx.HTTPError as e:
+                print(f"Попытка {attempt}/{config.ATTEMP} ошибка ({url}): {e}")
+                if attempt < config.ATTEMP:
+                    await asyncio.sleep(attempt * 1.1)
+        
+        print(f"Не удалось скачать: {url}")
+        return None, None
 
-    return imgs
 
-
-def download_and_store_chapter(url, manga_dir, vol, ch):
+async def download_and_store_chapter(client: httpx.AsyncClient, base_url: str, manga_dir: str, vol: str, ch: str):
     archive = os.path.join(manga_dir, f"volume_{vol}__chapter_{ch}.zip")
 
     if os.path.exists(archive):
-        print("✔ Уже есть:", archive)
+        print(f"Пропуск (уже есть): Том {vol} Глава {ch}")
         return
 
-    chapter_url = f"{url}/{vol}/{ch}"
-    print("→", chapter_url)
+    chapter_url = f"{base_url}/{vol}/{ch}"
+    print(f"Обработка главы: {vol}-{ch}")
 
-    soup = get_soup(chapter_url)
-    imgs = extract_image_links(soup)
-    data = download_images_to_memory(imgs)
+    try:
+        soup = await get_soup(client, chapter_url)
+        box = soup.find("div", class_="reader__pages")
+        imgs_tags = box.find_all("img") if box else []
+        links = [i.get("src") or i.get("data-src") for i in imgs_tags if i.get("src") or i.get("data-src")]
 
-    if len(data) != len(imgs):
-        print("⚠ Пропуск: неполная глава")
-        return
+        if not links:
+            print(f"Ссылки не найдены в главе {vol}-{ch}")
+            return
 
-    save_images_as_zip(data, archive)
+        tasks = [download_single_image(client, i, u) for i, u in enumerate(links, 1)]
+        results = await asyncio.gather(*tasks)
+
+        data_map = {name: data for name, data in results if name and data}
+
+        if len(data_map) == len(links):
+            utils.save_images_as_zip(data_map, archive)
+            print(f"Сохранено: Том {vol} Глава {ch}")
+        else:
+            print(f"Глава {vol}-{ch} скачана не полностью ({len(data_map)}/{len(links)})")
+
+    except Exception as e:
+        print(f"Ошибка в главе {vol}-{ch}: {e}")
 
 
-# ---------- Главная ----------
-
-
-def init(slugs):
-    for slug in slugs:
-        soup = get_soup(slug)
+async def process_manga(client: httpx.AsyncClient, slug_url: str):
+    try:
+        soup = await get_soup(client, slug_url)
         title = title_name(soup)
-
-        print("\n", title)
-
+        
+        print(f"\n=== {title} ===")
         manga_dir = os.path.join(config.PATH, title)
         os.makedirs(manga_dir, exist_ok=True)
 
         chapters = extract_vol_ch(soup)
-        print("Глав:", len(chapters))
+        print(f"Найдено глав: {len(chapters)}")
 
         for vol, ch in chapters:
-            download_and_store_chapter(slug, manga_dir, vol, ch)
+            await download_and_store_chapter(client, slug_url, manga_dir, vol, ch)
+            
+    except Exception as e:
+        print(f"Ошибка при обработке манги {slug_url}: {e}")
 
-        print("Готово.\n")
 
-
-slugs = [
-    "https://mangabuff.ru/manga/vyzhit-v-seme-iskusnyh-otravitelei",
-    "https://mangabuff.ru/manga/skazanie-hengdan"
+async def main():
+    slugs = [
+        "https://mangabuff.ru/manga/vyzhit-v-seme-iskusnyh-otravitelei",
+        "https://mangabuff.ru/manga/skazanie-hengdan"
     ]
 
-init(slugs)
+    limits = httpx.Limits(max_connections=config.WORKER, max_keepalive_connections=10)
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    
+    async with httpx.AsyncClient(headers=headers, limits=limits, follow_redirects=True) as client:
+        for slug in slugs:
+            await process_manga(client, slug)
+        
+    print("\n🚀 Все задачи выполнены.")
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

@@ -1,0 +1,10 @@
+https://mangalib.org/ru/manga/100232--what-happens-when-the-sub-male-strikes?bid=16144&section=chapters
+я могу добавить сохранение branch_id что бы в будущем смотреть от кого что скачиваю но тогда надо реализоввать проверку что сколько глав, и хранить доп инфу. По умолчанию branch_id=null а иногда как в этой манге branch_id=16144 or 16145
+
+
+# тесты
+manga: https://senkuro.me/manga/survival-diary/chapters jpg image
+orig size = 357mb fast
+["--lossless_jpeg=0", "-d", "1.0", "--effort", "7"] - 255mb too long 
+["-d", "0", "--effort", "7"] - 315mb fast but also no diifer with --effort 3
+["-d", "0", "--effort", "9"] - 311mb too long 
