@@ -50,7 +50,7 @@ class MangaLib(BaseParser):
         
     
     @staticmethod
-    def get_vol_ch_date(result_query_chapters, overall_chapter_number):
+    def get_chapter_info(result_query_chapters, overall_chapter_number):
         result = []
         for i in range(overall_chapter_number):
             chapter = result_query_chapters["data"][i]
@@ -64,7 +64,7 @@ class MangaLib(BaseParser):
             if label == "На модерации":
                 continue
             if expired == 0 or (expired == 1 and restricted is None):
-                result.append((chapter["volume"], chapter["number"], branch['created_at']),)
+                result.append((chapter["volume"], chapter["number"], branch['created_at'], chapter['name']),)
         return tuple(result)
     
     @staticmethod
@@ -103,7 +103,7 @@ class MangaLib(BaseParser):
             cover = item.get("cover")
             if not cover:
                 print("Doesn't have cover image")
-                continue # <-- ИСПРАВЛЕНО: Вместо ухода из функции через return 1, просто идем дальше
+                continue
                 
             url = (
                 cover.get("orig") or 
@@ -133,7 +133,7 @@ async def main(slugs):
             result_query_cover = await parser.fetchManga(query_cover)
             
             overall_chapter_number = result_query_fields["data"]["items_count"]["uploaded"]
-            result_get_vol_ch_date = parser.get_vol_ch_date(result_query_chapters, overall_chapter_number)
+            result_get_vol_ch_date = parser.get_chapter_info(result_query_chapters, overall_chapter_number)
             
             avalaible_chapter_number = len(result_get_vol_ch_date)
             main_name = result_query_fields["data"]["rus_name"]
@@ -151,22 +151,32 @@ async def main(slugs):
             publisher = [item['slug'] for item in result_query_fields['data']['publisher']]
             
             print(f"INFO - start downloading {main_name}")
-            await parser.save_cover(client, covers, main_name)
+            
+            manga_folder = Path(config.PATH) / parser.get_clean_name(main_name)
+            existing_covers = list(manga_folder.glob("cover*"))
+            if len(existing_covers) == len(covers):
+                print(f"INFO - All covers ({len(covers)}) already exist. Skipping cover download.")
+            else:
+                await parser.save_cover(client, covers, main_name)
             
             print("INFO - starting download chapters...")
             
-            for vol, ch, date in result_get_vol_ch_date:
+            for vol, ch, date, ch_name in result_get_vol_ch_date:
                 clean_manga_name = parser.get_clean_name(main_name)
-                zip_path = Path(config.PATH) / clean_manga_name / f'volume_{vol}__chapter_{ch}.zip'
+                
+                if ch_name is not None:
+                    zip_path = Path(config.PATH) / clean_manga_name / f'volume_{vol}__chapter_{ch}-{ch_name}.zip'
+                else:
+                    zip_path = Path(config.PATH) / clean_manga_name / f'volume_{vol}__chapter_{ch}.zip'
                 
                 if zip_path.exists():
                     print(f"INFO - Chapter Vol {vol} Ch {ch} already exists. Skipping.")
                     continue
                 
-                print(f"INFO - Downloading Vol {vol} Ch {ch}...")
-                await parser.save_chapter(client, slug, vol, ch, main_name, parser.server_one)
+                print(f"INFO - Downloading Vol {vol} Ch {ch} {ch_name}...")
+                await parser.save_chapter(client, slug, vol, ch, main_name, parser.server_one, zip_path)
             
 slugs = [
-    "8135--love-advice-from-the-great-duke-of-hell"
+    "18743--yuusha-goikkou-no-kaerimichi"
 ]
 asyncio.run(main(slugs))

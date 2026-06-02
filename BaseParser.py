@@ -94,18 +94,23 @@ class BaseParser:
                 content = await self.fetchImage(client, url)
                 img_ext = self.get_image_type(content)
                 
-                # Lossless JXL сжатие на лету
                 if config.USE_JXL and img_ext in ("jpg", "png"):
-                    content = self.streaming_lossless_to_jxl(content)
-                    img_ext = "jxl"
-                    
+                    try:
+                        jxl_content = self.streaming_lossless_to_jxl(content)
+                        content = jxl_content
+                        img_ext = "jxl"
+                    except RuntimeError as enc_err:
+                        print(f"WARNING - Страница {page_data['slug']} имеет дефекты структуры ({enc_err}). "
+                            f"Сохраняем в оригинальном формате .{img_ext}")
+                
                 img_name = f"{page_data['slug']}.{img_ext}"
                 chapter_images[img_name] = content
+                
             except Exception as e:
-                print(f"ERROR - downloading page {page_data['slug']}: {e}")
+                print(f"ERROR - Не удалось скачать/обработать страницу {page_data['slug']}: {e}")
                 
                 
-    async def save_chapter(self, client, slug, vol, ch, main_name, server_one):
+    async def save_chapter(self, client, slug, vol, ch, main_name, server_one, zip_path):
         """Скачивает и упаковывает одну главу манги"""
         a = await self.fetchMangaChapter(slug, vol, ch)
         chapter_images = {}
@@ -121,10 +126,7 @@ class BaseParser:
             
         await asyncio.gather(*tasks)
         
-        # Сохраняем zip только если скачалась хотя бы одна страница
         if chapter_images:
-            clean_manga_name = self.get_clean_name(main_name)
-            zip_path = Path(config.PATH) / clean_manga_name / f'volume_{vol}__chapter_{ch}.zip'
             self.save_images_as_zip(chapter_images, zip_path)
             print(f"INFO - Chapter Vol {vol} Ch {ch} saved successfully.")
     
