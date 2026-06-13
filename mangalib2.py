@@ -164,8 +164,8 @@ async def main(slugs):
             for vol, ch, date, ch_name in result_get_vol_ch_date:
                 clean_manga_name = parser.get_clean_name(main_name)
                 
-                if ch_name is not None:
-                    zip_path = Path(config.PATH) / clean_manga_name / f'volume_{vol}__chapter_{ch}-{ch_name}.zip'
+                if ch_name != "":
+                    zip_path = Path(config.PATH) / clean_manga_name / f'volume_{vol}__chapter_{ch}-{parser.get_clean_name(ch_name)}.zip'
                 else:
                     zip_path = Path(config.PATH) / clean_manga_name / f'volume_{vol}__chapter_{ch}.zip'
                 
@@ -177,6 +177,6 @@ async def main(slugs):
                 await parser.save_chapter(client, slug, vol, ch, main_name, parser.server_one, zip_path)
             
 slugs = [
-    "18743--yuusha-goikkou-no-kaerimichi"
+    "86898--gimai-seikatsu-manga"
 ]
 asyncio.run(main(slugs))

@@ -38,7 +38,7 @@ class BaseParser:
         with open(path, 'wb') as f:
             f.write(image)
     
-    async def fetchImage(self, client: httpx.Client, image_url, retries=3, backoff_factor=2):
+    async def fetchImage(self, client: httpx.AsyncClient, image_url, retries=3, backoff_factor=2):
         """Скачивает изображение с автоматическими повторными попытками при сбоях сети"""
         custom_timeout = httpx.Timeout(30.0, connect=10.0)
         
@@ -103,7 +103,7 @@ class BaseParser:
                         print(f"WARNING - Страница {page_data['slug']} имеет дефекты структуры ({enc_err}). "
                             f"Сохраняем в оригинальном формате .{img_ext}")
                 
-                img_name = f"{page_data['slug']}.{img_ext}"
+                img_name = f"{str(page_data['slug']).rjust(3,'0')}.{img_ext}"
                 chapter_images[img_name] = content
                 
             except Exception as e:
